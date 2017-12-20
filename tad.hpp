@@ -30,6 +30,7 @@
  * Any expression can be simplified with the associated type `::canonical`.    *
  *                                                                             *
  * For example:                                                                *
+ *     using namespace tad;                                                    *
  *     double x[] = { 2.0, 5.0 };                                              *
  *                                                                             *
  *     // softmax(x) = log(1+exp(x))                                           *
