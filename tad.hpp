@@ -24,34 +24,43 @@
  * automatic differentiation for functions specified as types. Independent     *
  * variables are enumerated as the types `Variable<0>`, `Variable<1>`, etc.    *
  *                                                                             *
- * Functions are specified via composition and derivatives via the associated  *
- * types `::derivative<0>`, `::derivative<1>`, etc.                            *        
+ * Functions are specified via composition and derivatives computed at         *
+ * compile-time via the `Derivative<F<X>,X>`.                                  *
  *                                                                             *
  * Any expression can be simplified with the associated type `::canonical`.    *
  *                                                                             *
  * For example:                                                                *
- *     using namespace tad;                                                    *
+ *     template <class X>                                                      *
+ *     using Softmax = typename Log<Sum<One,Exp<X>>>::canonical;               *
+ *     template<class X>                                                       *
+ *     using Logistic = Derivative<Softmax<X>, X>;                             *
+ *                                                                             *
+ *     // ...                                                                  *
+ *                                                                             *
+ *     typedef Variable<0> X;                                                  *
+ *     typedef Variable<1> Y;                                                  *
+ *                                                                             *
  *     double x[] = { 2.0, 5.0 };                                              *
+ *     cout << "log(1+exp(2)) == "       << Softmax<X>::eval(x)  << endl;      *
+ *     cout << "exp(5) / (1+exp(5)) == " << Logistic<Y>::eval(x) << endl;      *
  *                                                                             *
- *     // softmax(x) = log(1+exp(x))                                           *
- *     typedef Log<Sum<Constant<1>,Exp<Variable<0>>>>::canonical Softmax;      *
- *     cout << "log(1+exp(2)) == " << Softmax::eval(x) << endl;                *
+ *     // use complex numbers! assuming #include <complex> is present...       *
+ *     std::complex<double> z[] = { 0.5 };                                     *
+ *     cout << "ArCosh(0.5) == " << ArCosh<X>::eval(z) << endl;                *
+ *     // any numeric type that overloads <cmath> functions will work          *
  *                                                                             *
- *     // logistic(x) = exp(x) / (1+exp(x)) = (d/dx) softmax(x)                *
- *     typedef Softmax::derivative<0>::canonical Logistic;                     *
- *     cout << "exp(2) / (1+exp(2)) == " << Logistic::eval(x) << endl;         *
- *                                                                             *
- *     // f(x,y) = sqrt(x^2+y)                                                 *
- *     typedef Sqrt<                                                           *
- *         Sum<Power<Variable<0>,Constant<2>>,Variable<1>>                     *
- *     >::canonical F;                                                         *
- *     cout << "sqrt(2^2 + 5) == " << F::eval(x) << endl;                      *
+ *     // inline specification of sqrt(x^2+y)                                  *
+ *     typedef Sqrt<Sum<Power<X,Constant<2>>,Y>>::canonical Expr;              *
+ *     cout << "sqrt(2^2 + 5) == " << Expr::eval(x) << endl;                   *
+ *     // Expr's derivatives can be obtained directly:                         *                    
+ *     // typedef Derivative<Expr,X> Expr_dx;                                  *
+ *     // typedef Derivative<Expr,Y> Expr_dy;                                  *
  *                                                                             *
  * In theory, each operation is inlined. Coupled with -ffast-math, it may      *
  * permit the compiler to make some serious reductions in the evaluation of    *
  * the functions and their derivatives. The following functions are provided:  *
  *                                                                             *
- * Unary: Exp, Log, Sqrt, Cbrt,                                                *
+ * Unary: Negative, Reciprocal, Square, Exp, Log, Sqrt, Cbrt,                  *
  *        Sin,  Cos,  Tan,  Csc,  Sec,  Cot,                                   *
  *        Sinh, Cosh, Tanh, Csch, Sech, Coth,                                  *
  *        ArcSin, ArcCos, ArcTan, ArcCsc, ArcSec, ArcCot,                      *
@@ -64,22 +73,20 @@
  * n-ary: Sum<X,Y,...>     = x+y+...                                           *
  *        Product<X,Y,...> = x*y*...                                           *
  *                                                                             *
- * Special: Constant<n> = (double) n,                                          *
- *          ConstantPI  = 3.14159...,                                          *
- *          ConstantE   = 2.71828...,                                          *
+ * Special: Zero, One, Two, EulerE, Three, Pi                                  *
  *          Variable<i> = x[i],                                                *
- *          Delta<i,j>  = (i == j)? 1 : 0,                                     *
- *          Indeterminate = 0.0 / 0.0                                          *
+ *          Delta<X,Y>  = (X == Y)? 1 : 0,                                     *
+ *          Indeterminate = 0.0 / 0.0,                                         *
+ *          Derivative<Expression,Variable>,                                   *
+ *          Canonical<X,Y> (internal use only)                                 *
  *                                                                             *
  * When possible, template specializations are provided when an argument is    *
- * Constant<0> or Constant<1> and the expression can be reduced. For example,  *
- *     Product<..., Constant<0>, ...>::canonical == Constant<0>                *
+ * Zero or One and the expression can be reduced. For example,                 *
+ *     Product<..., Zero, ...>::canonical == Zero                              *
+ * This is why calling `::canonical` on a user-constructed function is         *
+ * potentially useful. (::canonical is automatically expanded for any internal *
+ * composition.)                                                               *
  *                                                                             *
- * Possible extension: currently, this library is restricted to double         *
- * precision numbers. A search and replace `s/double/complex/g` will change it *
- * to complex numbers. Alternatively, one could typedef or macro the scalar    *
- * type. If there is a good reason why this is useful, submit a pull request   *
- * or contact me and let me know.                                              *
  ******************************************************************************/
 
 #ifndef TAD_H
@@ -91,8 +98,15 @@ namespace tad {
 
 
 
+// The derivative
+template <class F, class X>
+using Derivative = typename F::canonical::template derivative<X>::canonical;
 
-
+// an internal "method" to recursively enforce the canonical form
+// (necessary since derivative and eval() are not always defined for
+// non-canonical forms)
+template <class X, class Y> struct Canonical      { using type = typename Canonical<Y, typename Y::canonical>::type; };
+template <class X>          struct Canonical<X,X> { using type = X; };
 
 
 // 4 basic types that illustrate the approach of this library:
@@ -104,38 +118,52 @@ namespace tad {
 // An Indeterminate type
 struct Indeterminate {
     using canonical = Indeterminate;
-    template <int i> using derivative = Indeterminate;
-    static inline double eval(double *x) { return 0.0 / 0.0; }
+    template <class Z> using derivative = Indeterminate;
+    template <class scalar> static inline scalar eval(scalar *x) { return 0.0 / 0.0; }
 };
 
-// An integer Constant type
-template <int n> struct Constant {
-    using canonical = Constant<n>;
-    template <int i> using derivative = Constant<0>;
-    static inline double eval(double *x) { return (double) n; }
+struct Zero {
+    using canonical = Zero;
+    template <class Z> using derivative = Zero;
+    template <class scalar> static inline scalar eval(scalar *x) { return 0.0; }
+};
+struct One {
+    using canonical = One;
+    template <class Z> using derivative = Zero;
+    template <class scalar> static inline scalar eval(scalar *x) { return 1.0; }
+};
+struct Two {
+    using canonical = Two;
+    template <class Z> using derivative = Zero;
+    template <class scalar> static inline scalar eval(scalar *x) { return 2.0; }
+};
+struct Three {
+    using canonical = Three;
+    template <class Z> using derivative = Zero;
+    template <class scalar> static inline scalar eval(scalar *x) { return 3.0; }
 };
 
 // Two special constants
-struct ConstantPI {
-    using canonical = ConstantPI;
-    template <int i> using derivative = Constant<0>;
-    static inline double eval(double *x) { return 3.141592653589793; }
+struct Pi {
+    using canonical = Pi;
+    template <class Z> using derivative = Zero;
+    template <class scalar> static inline scalar eval(scalar *x) { return 3.141592653589793; }
 };
-struct ConstantE {
-    using canonical = ConstantE;
-    template <int i> using derivative = Constant<0>;
-    static inline double eval(double *x) { return 2.718281828459045; }
+struct EulerE {
+    using canonical = EulerE;
+    template <class Z> using derivative = Zero;
+    template <class scalar> static inline scalar eval(scalar *x) { return 2.718281828459045; }
 };
 
 // A (Kronecker-) Delta type
-template <int i, int j> struct Delta      { using canonical = Constant<0>; };
-template <int i>        struct Delta<i,i> { using canonical = Constant<1>; };
+template <class X, class Y> struct Delta      { using canonical = Zero; };
+template <class X>          struct Delta<X,X> { using canonical = One; };
 
 // An indexed Variable type
 template <int i> struct Variable {
     using canonical = Variable<i>;
-    template <int j> using derivative = Delta<i,j>;
-    static inline double eval(double *x) { return x[i]; }
+    template <class X> using derivative = Delta<Variable<i>,X>;
+    template <class scalar> static inline scalar eval(scalar *x) { return x[i]; }
 };
 
 
@@ -148,11 +176,11 @@ template <int i> struct Variable {
 
 // Now for something a bit more advanced, we represent a Sum of functions.
 // Notice that `canonical` is greedily evaluated for each type. This is mostly
-// to exploit Constant<0>'s that may appear when taking derivatives.
+// to exploit Zero's that may appear when taking derivatives.
 
 // (empty sum)
 template <class ...Empty> struct Sum {
-    using canonical = Constant<0>;
+    using canonical = Zero;
 };
 // (singleton sum)
 template <class X> struct Sum<X> {
@@ -160,31 +188,25 @@ template <class X> struct Sum<X> {
 };
 // (binary sum)
 template <class X, class Y> struct Sum<X,Y> {
-    using canonical = Sum<typename X::canonical, typename Y::canonical>;
-    template <int i> using derivative =
-        typename Sum<
-            typename X::canonical::template derivative<i>::canonical,
-            typename Y::canonical::template derivative<i>::canonical>::canonical;
-    static inline double eval(double *x) { return X::canonical::eval(x) + Y::canonical::eval(x); }
+    using canonical = typename Canonical<Sum<X,Y>, Sum<typename X::canonical, typename Y::canonical>>::type;
+    template <class Z> using derivative = Sum<Derivative<X,Z>, Derivative<Y,Z>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return X::canonical::eval(x) + Y::canonical::eval(x); }
 };
 // (binary sum) -- with specializations to skip non-contributing terms
-template <class X> struct Sum<X, Constant<0>> { using canonical = typename X::canonical; };
-template <class X> struct Sum<Constant<0>, X> { using canonical = typename X::canonical; };
-template <> struct Sum<Constant<0>, Constant<0>> { using canonical = Constant<0>; };
+template <class X> struct Sum<X, Zero>    { using canonical = typename X::canonical; };
+template <class X> struct Sum<Zero, X>    { using canonical = typename X::canonical; };
+template <>        struct Sum<Zero, Zero> { using canonical = Zero; };
 // (variadic sum) -- reduce to canonical (nested binary) form
 template <class X, class Y, class Z, class ...Args> struct Sum<X,Y,Z,Args...>{
-    using canonical = typename Sum<
-        typename Sum<typename X::canonical, typename Y::canonical>::canonical,
-        typename Sum<typename Z::canonical,               Args...>::canonical
-    >::canonical;
+    using canonical = typename Sum<Sum<X,Y>,Sum<Z,Args...>>::canonical;
 };
 
 // The variadic Product is almost identical to Sum, except we get extra nice
-// simplifications when Constant<0> appears
+// simplifications when Zero appears
 
 // (empty product)
 template <class ...Empty> struct Product {
-    using canonical = Constant<1>;
+    using canonical = One;
 };
 // (singleton product)
 template <class X> struct Product<X> {
@@ -192,28 +214,22 @@ template <class X> struct Product<X> {
 };
 // (binary product)
 template <class X, class Y> struct Product<X,Y> {
-    using canonical = Product<typename X::canonical, typename Y::canonical>;
-    template <int i> using derivative =
-        typename Sum<
-            typename Product<typename X::canonical::template derivative<i>::canonical, typename Y::canonical>::canonical,
-            typename Product<typename X::canonical, typename Y::canonical::template derivative<i>::canonical>::canonical>::canonical;
-    static inline double eval(double *x) { return X::canonical::eval(x) * Y::canonical::eval(x); }
+    using canonical = typename Canonical<Product<X,Y>, Product<typename X::canonical, typename Y::canonical>>::type;
+    template <class Z> using derivative = Sum<Product<Derivative<X,Z>, Y>, Product<X, Derivative<Y,Z>>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return X::canonical::eval(x) * Y::canonical::eval(x); }
 };
-// (binary product) -- with specializations for Constant<0> and/or Constant<1>
-template <class X> struct Product<X, Constant<0>> { using canonical = Constant<0>; };
-template <class X> struct Product<Constant<0>, X> { using canonical = Constant<0>; };
-template <class X> struct Product<X, Constant<1>> { using canonical = typename X::canonical; };
-template <class X> struct Product<Constant<1>, X> { using canonical = typename X::canonical; };
-template <> struct Product<Constant<0>, Constant<0>> { using canonical = Constant<0>; };
-template <> struct Product<Constant<1>, Constant<0>> { using canonical = Constant<0>; };
-template <> struct Product<Constant<0>, Constant<1>> { using canonical = Constant<0>; };
-template <> struct Product<Constant<1>, Constant<1>> { using canonical = Constant<1>; };
+// (binary product) -- with specializations for Zero and/or One
+template <class X> struct Product<X, Zero> { using canonical = Zero; };
+template <class X> struct Product<Zero, X> { using canonical = Zero; };
+template <class X> struct Product<X, One>  { using canonical = typename X::canonical; };
+template <class X> struct Product<One, X>  { using canonical = typename X::canonical; };
+template <> struct Product<Zero, Zero> { using canonical = Zero; };
+template <> struct Product<One,  Zero> { using canonical = Zero; };
+template <> struct Product<Zero,  One> { using canonical = Zero; };
+template <> struct Product<One,   One> { using canonical = One; };
 // (variadic product) -- reduce to canonical binary product form
 template <class X, class Y, class Z, class ...Args> struct Product<X,Y,Z,Args...>{
-    using canonical = 
-        typename Product<
-            typename Product<typename X::canonical, typename Y::canonical>::canonical,
-            typename Product<typename Z::canonical,               Args...>::canonical>::canonical;
+    using canonical = typename Product<Product<X, Y>, Product<Z, Args...>>::canonical;
 };
 
 
@@ -224,37 +240,44 @@ template <class X, class Y, class Z, class ...Args> struct Product<X,Y,Z,Args...
 
 
 
-// Now for some binary functions: Difference, Ratio
+// Now for some useful helper functions: Square, Negative, Reciprocal, Difference, Ratio
 
-// Representing a Difference with a specialization for Difference<X,X> = Constant<0>
-template <class X, class Y> struct Difference {
-    using canonical = typename Sum<
-        typename X::canonical,
-        typename Product<
-            Constant<-1>,
-            typename Y::canonical>::canonical>::canonical;
+template <class X> struct Negative {
+    using canonical = typename Canonical<Negative<X>, Negative<typename X::canonical>>::type;
+    template <class Z> using derivative = Negative<Derivative<X,Z>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return -X::canonical::eval(x); }
 };
-template <class X> struct Difference<X,X> { using canonical = Constant<0>; };
+template <> struct Negative<Zero> { using canonical = Zero; };
+
+template <class X> struct Square {
+    using canonical = typename Canonical<Square<X>, Square<typename X::canonical>>::type;
+    template <class Z> using derivative = Product<Two, X, Derivative<X,Z>>;
+    template <class scalar> static inline scalar eval(scalar *x) { double y = X::canonical::eval(x); return y*y; }
+};
+template <> struct Square<Zero> { using canonical = Zero; };
+template <> struct Square<One>  { using canonical = One;  };
+
+// Representing a Difference with a specialization for Difference<X,X> = Zero
+template <class X, class Y> using Difference = typename Sum<X,Negative<Y>>::canonical;
+template <class X> struct Sum<X,Negative<X>> { using canonical = Zero; };
 
 // Representing a Ratio -- note the use of the quotient rule to construct the derivative
-template <class X, class Y> struct Power;
 template <class X, class Y> struct Ratio {
-    using canonical = Ratio<typename X::canonical, typename Y::canonical>;
-    template <int i> using derivative =
-        typename Ratio<
-            typename Difference<
-                typename Product<typename X::canonical::template derivative<i>::canonical, typename Y::canonical>::canonical,
-                typename Product<typename X::canonical, typename Y::canonical::template derivative<i>::canonical>::canonical>::canonical,
-            typename Power<typename X::canonical, Constant<2>>::canonical>::canonical;
-    static inline double eval(double *x) { return X::canonical::eval(x) / Y::canonical::eval(x); }
+    using canonical = typename Canonical<Ratio<X,Y>, Ratio<typename X::canonical, typename Y::canonical>>::type;
+    template <class Z> using derivative =
+        Ratio<
+            Difference<
+                Product<Derivative<X,Z>, Y>,
+                Product<X, Derivative<Y,Z>>>,
+            Square<Y>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return X::canonical::eval(x) / Y::canonical::eval(x); }
 };
 // and specializations for X/X, 0/X, and 0/0
-template <class X> struct Ratio<X,X>               { using canonical = Constant<1>;   };
-template <class X> struct Ratio<Constant<0>, X>    { using canonical = Constant<0>;   };
-template <> struct Ratio<Constant<0>, Constant<0>> { using canonical = Indeterminate; };
+template <class X> struct Ratio<X,X>        { using canonical = One;   };
+template <class X> struct Ratio<Zero, X>    { using canonical = Zero;   };
+template <>        struct Ratio<Zero, Zero> { using canonical = Indeterminate; };
 
-
-
+template <class X> using Reciprocal = typename Ratio<One,X>::canonical;
 
 
 
@@ -263,24 +286,21 @@ template <> struct Ratio<Constant<0>, Constant<0>> { using canonical = Indetermi
 
 // Now a basic Exp and Log implementation
 
-// Exp, with a specialization for Exp<Constant<0>>
+// Exp, with a specialization for Exp<Zero>
 template <class X> struct Exp {
-    using canonical = Exp<typename X::canonical>;
-    template <int i> using derivative =
-        typename Product<
-            typename Exp<typename X::canonical>::canonical,
-            typename X::canonical::template derivative<i>::canonical>::canonical;
-    static inline double eval(double *x) { return exp(X::canonical::eval(x)); }
+    using canonical = typename Canonical<Exp<X>, Exp<typename X::canonical>>::type;
+    template <class Z> using derivative = Product<canonical, Derivative<X,Z>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return exp(X::canonical::eval(x)); }
 };
-template <> struct Exp<Constant<0>> { using canonical = Constant<1>; };
+template <> struct Exp<Zero> { using canonical = One; };
 
-// Log, with a specialization for Log<Constant<1>>
+// Log, with a specialization for Log<One>
 template <class X> struct Log {
-    using canonical = Log<typename X::canonical>;
-    template <int i> using derivative = typename Ratio<typename X::canonical::template derivative<i>::canonical, typename X::canonical>::canonical;
-    static inline double eval(double *x) { return log(X::canonical::eval(x)); }
+    using canonical = typename Canonical<Log<X>, Log<typename X::canonical>>::type;
+    template <class Z> using derivative = Ratio<Derivative<X,Z>, X>;
+    template <class scalar> static inline scalar eval(scalar *x) { return log(X::canonical::eval(x)); }
 };
-template <> struct Log<Constant<1>> { using canonical = Constant<0>; };
+template <> struct Log<One> { using canonical = Zero; };
 
 
 
@@ -292,26 +312,14 @@ template <> struct Log<Constant<1>> { using canonical = Constant<0>; };
 
 // Finally, a general implementation of Power -- note that we express the derivative using x^y = exp(y*log(x))
 template <class X, class Y> struct Power {
-    using canonical = Power<typename X::canonical, typename Y::canonical>;
-    template <int i> using derivative =
-        typename Exp<
-            typename Product<
-                typename Y::canonical,
-                typename Log<typename X::canonical>::canonical>::canonical>::canonical::template derivative<i>::canonical;
-    static inline double eval(double *x) { return pow(X::canonical::eval(x), Y::canonical::eval(x)); }
+    using canonical = typename Canonical<Power<X,Y>, Power<typename X::canonical, typename Y::canonical>>::type;
+    template <class Z> using derivative = Derivative<Exp<Product<Y,Log<X>>>,Z>;
+    template <class scalar> static inline scalar eval(scalar *x) { return pow(X::canonical::eval(x), Y::canonical::eval(x)); }
 };
 // with a few specific specializations
-template <class X> struct Power<X, Constant<-1>> { using canonical = typename Ratio<Constant<1>, typename X::canonical>::canonical; };
-template <class X> struct Power<X, Constant< 0>> { using canonical = Constant<1>; };
-template <class X> struct Power<X, Constant< 1>> { using canonical = typename X::canonical; };
-template <class X> struct Power<X, Constant< 2>> {
-    using canonical = Power<typename X::canonical, Constant<2>>;
-    template <int i> using derivative = typename Product<Constant<2>, typename X::canonical, typename X::canonical::template derivative<i>::canonical>::canonical;
-    static inline double eval(double *x) {
-        double y = X::canonical::eval(x);
-        return y*y;
-    }
-};
+template <class X> struct Power<X, Zero> { using canonical = One; };
+template <class X> struct Power<X, One>  { using canonical = typename X::canonical; };
+template <class X> struct Power<X, Two>  { using canonical = typename Square<X>::canonical; };
 
 
 
@@ -321,36 +329,23 @@ template <class X> struct Power<X, Constant< 2>> {
 
 
 
-// Straight-forward, but messy, implementations of Sqrt and Cbrt with specializations for Constant<0>
+// Straight-forward, but messy, implementations of Sqrt and Cbrt with specializations for Zero
 
 template <class X> struct Sqrt {
-    using canonical = Sqrt<typename X::canonical>;
-    template <int i> using derivative = typename Product<
-        Ratio<Constant<1>,Constant<2>>,
-        typename Ratio<
-            typename X::canonical::template derivative<i>::canonical,
-            typename Sqrt<typename X::canonical>::canonical
-        >::canonical
-    >::canonical;
-    static inline double eval(double *x) { return sqrt(X::canonical::eval(x)); }
+    using canonical = typename Canonical<Sqrt<X>, Sqrt<typename X::canonical>>::type;
+    template <class Z> using derivative = Product<Ratio<One,Two>, Ratio<Derivative<X,Z>, canonical>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return sqrt(X::canonical::eval(x)); }
 };
-template <> struct Sqrt<Constant<0>> { using canonical = Constant<0>; };
+template <> struct Sqrt<Zero> { using canonical = Zero; };
 
 template <class X> struct Cbrt {
-    using canonical = Cbrt<typename X::canonical>;
-    template <int i> using derivative = typename Product<
-        Ratio<Constant<1>,Constant<3>>,
-        typename Ratio<
-            typename X::canonical::template derivative<i>::canonical,
-            typename Power<
-                typename Cbrt<typename X::canonical>::canonical,
-                Constant<2>
-            >::canonical
-        >::canonical
-    >::canonical;
-    static inline double eval(double *x) { return cbrt(X::canonical::eval(x)); }
+    using canonical = typename Canonical<Cbrt<X>, Cbrt<typename X::canonical>>::type;
+    template <class Z> using derivative = Product<
+        Ratio<One,Three>,
+        Ratio<Derivative<X,Z>, Square<Cbrt<X>>>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return cbrt(X::canonical::eval(x)); }
 };
-template <> struct Cbrt<Constant<0>> { using canonical = Constant<0>; };
+template <> struct Cbrt<Zero> { using canonical = Zero; };
 
 
 
@@ -363,73 +358,50 @@ template <> struct Cbrt<Constant<0>> { using canonical = Constant<0>; };
 // Trig and Hyperbolic functions
 template <class X> struct Cos;
 template <class X> struct Sin {
-    using canonical = Sin<typename X::canonical>;
-    template <int i> using derivative =
-        typename Product<
-            typename Cos<typename X::canonical>::canonical,
-            typename X::canonical::template derivative<i>::canonical>::canonical;
-    static inline double eval(double *x) { return sin(X::canonical::eval(x)); }
+    using canonical = typename Canonical<Sin<X>, Sin<typename X::canonical>>::type;
+    template <class Z> using derivative = Product<Cos<X>, Derivative<X,Z>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return sin(X::canonical::eval(x)); }
 };
 template <class X> struct Cos {
-    using canonical = Cos<typename X::canonical>;
-    template <int i> using derivative =
-        typename Product<
-            Constant<-1>,
-            typename Sin<typename X::canonical>::canonical,
-            typename X::canonical::template derivative<i>::canonical>::canonical;
-    static inline double eval(double *x) { return cos(X::canonical::eval(x)); }
+    using canonical = typename Canonical<Cos<X>, Cos<typename X::canonical>>::type;
+    template <class Z> using derivative = Negative<Product<Sin<X>, Derivative<X,Z>>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return cos(X::canonical::eval(x)); }
 };
 template <class X> struct Tan {
-    using canonical = Tan<typename X::canonical>;
-    template <int i> using derivative =
-        typename Product<
-            typename Power<
-                typename Cos<typename X::canonical>::canonical,
-                Constant<-2>>::canonical,
-            typename X::canonical::template derivative<i>::canonical>::canonical;
-    static inline double eval(double *x) { return tan(X::canonical::eval(x)); }
+    using canonical = typename Canonical<Tan<X>, Tan<typename X::canonical>>::type;
+    template <class Z> using derivative = Ratio<Derivative<X,Z>, Square<Cos<X>>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return tan(X::canonical::eval(x)); }
 };
 template <class X> struct Cosh;
 template <class X> struct Sinh {
-    using canonical = Sinh<typename X::canonical>;
-    template <int i> using derivative =
-        typename Product<
-            typename Cosh<typename X::canonical>::canonical,
-            typename X::canonical::template derivative<i>::canonical>::canonical;
-    static inline double eval(double *x) { return sinh(X::canonical::eval(x)); }
+    using canonical = typename Canonical<Sinh<X>, Sinh<typename X::canonical>>::type;
+    template <class Z> using derivative = Product<Cosh<X>, Derivative<X,Z>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return sinh(X::canonical::eval(x)); }
 };
 template <class X> struct Cosh {
-    using canonical = Cosh<typename X::canonical>;
-    template <int i> using derivative =
-        typename Product<
-            typename Sinh<typename X::canonical>::canonical,
-            typename X::canonical::template derivative<i>::canonical>::canonical;
-    static inline double eval(double *x) { return cosh(X::canonical::eval(x)); }
+    using canonical = typename Canonical<Cosh<X>, Cosh<typename X::canonical>>::type;
+    template <class Z> using derivative = Product<Sinh<X>, Derivative<X,Z>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return cosh(X::canonical::eval(x)); }
 };
 template <class X> struct Tanh {
-    using canonical = Tanh<typename X::canonical>;
-    template <int i> using derivative =
-        typename Product<
-            typename Power<
-                typename Cosh<typename X::canonical>::canonical,
-                Constant<-2>>::canonical,
-            typename X::canonical::template derivative<i>::canonical>::canonical;
-    static inline double eval(double *x) { return tanh(X::canonical::eval(x)); }
+    using canonical = typename Canonical<Tanh<X>, Tanh<typename X::canonical>>::type;
+    template <class Z> using derivative = Ratio<Derivative<X,Z>, Square<Cosh<X>>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return tanh(X::canonical::eval(x)); }
 };
 
-template<> struct Sin< Constant<0>> { using canonical = Constant<0>; };
-template<> struct Cos< Constant<0>> { using canonical = Constant<1>; };
-template<> struct Tan< Constant<0>> { using canonical = Constant<0>; };
-template<> struct Sinh<Constant<0>> { using canonical = Constant<0>; };
-template<> struct Cosh<Constant<0>> { using canonical = Constant<1>; };
-template<> struct Tanh<Constant<0>> { using canonical = Constant<0>; };
+template<> struct  Sin<Zero> { using canonical = Zero; };
+template<> struct  Cos<Zero> { using canonical = One; };
+template<> struct  Tan<Zero> { using canonical = Zero; };
+template<> struct Sinh<Zero> { using canonical = Zero; };
+template<> struct Cosh<Zero> { using canonical = One; };
+template<> struct Tanh<Zero> { using canonical = Zero; };
 
-template <class X> using Csc  = typename Ratio<Constant<1>, typename  Sin<typename X::canonical>::canonical>::canonical;
-template <class X> using Sec  = typename Ratio<Constant<1>, typename  Cos<typename X::canonical>::canonical>::canonical;
-template <class X> using Cot  = typename Ratio<Constant<1>, typename  Tan<typename X::canonical>::canonical>::canonical;
-template <class X> using Csch = typename Ratio<Constant<1>, typename Sinh<typename X::canonical>::canonical>::canonical;
-template <class X> using Sech = typename Ratio<Constant<1>, typename Cosh<typename X::canonical>::canonical>::canonical;
-template <class X> using Coth = typename Ratio<Constant<1>, typename Tanh<typename X::canonical>::canonical>::canonical;
+template <class X> using Csc  = typename Ratio<One,  Sin<X>>::canonical;
+template <class X> using Sec  = typename Ratio<One,  Cos<X>>::canonical;
+template <class X> using Cot  = typename Ratio<One,  Tan<X>>::canonical;
+template <class X> using Csch = typename Ratio<One, Sinh<X>>::canonical;
+template <class X> using Sech = typename Ratio<One, Cosh<X>>::canonical;
+template <class X> using Coth = typename Ratio<One, Tanh<X>>::canonical;
 
 
 
@@ -441,99 +413,51 @@ template <class X> using Coth = typename Ratio<Constant<1>, typename Tanh<typena
 
 // Arc and Area (inverse) trig functions
 template <class X> struct ArcSin {
-    using canonical = ArcSin<typename X::canonical>;
-    template <int i> using derivative =
-        typename Ratio<
-            Constant<1>,
-            typename Sqrt<
-                typename Difference<
-                    Constant<1>,
-                    typename Power<typename X::canonical, Constant<2>>::canonical
-                >::canonical
-            >::canonical
-        >::canonical;
-    static inline double eval(double *x) { return asin(X::canonical::eval(x)); }
+    using canonical = typename Canonical<ArcSin<X>, ArcSin<typename X::canonical>>::type;
+    template <class Z> using derivative = Ratio<Derivative<X,Z>, Sqrt<Difference<One,Square<X>>>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return asin(X::canonical::eval(x)); }
 };
 template <class X> struct ArcCos {
-    using canonical = ArcCos<typename X::canonical>;
-    template <int i> using derivative =
-        typename Ratio<
-            Constant<-1>,
-            typename Sqrt<
-                typename Difference<
-                    Constant<1>,
-                    typename Power<typename X::canonical, Constant<2>>::canonical
-                >::canonical
-            >::canonical
-        >::canonical;
-    static inline double eval(double *x) { return acos(X::canonical::eval(x)); }
+    using canonical = typename Canonical<ArcCos<X>, ArcCos<typename X::canonical>>::type;
+    template <class Z> using derivative = Negative<Ratio<Derivative<X,Z>, Sqrt<Difference<One,Square<X>>>>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return acos(X::canonical::eval(x)); }
 };
 template <class X> struct ArcTan {
-    using canonical = ArcTan<typename X::canonical>;
-    template <int i> using derivative =
-        typename Ratio<
-            Constant<1>,
-            typename Sum<
-                Constant<1>,
-                typename Power<typename X::canonical, Constant<2>>::canonical
-            >::canonical
-        >::canonical;
-    static inline double eval(double *x) { return atan(X::canonical::eval(x)); }
+    using canonical = typename Canonical<ArcTan<X>, ArcTan<typename X::canonical>>::type;
+    template <class Z> using derivative = Ratio<Derivative<X,Z>,Sum<One,Square<X>>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return atan(X::canonical::eval(x)); }
 };
+
+// and template the eval() functions over arbitrary scalar types
 template <class X> struct ArSinh {
-    using canonical = ArSinh<typename X::canonical>;
-    template <int i> using derivative =
-        typename Ratio<
-            Constant<1>,
-            typename Sqrt<
-                typename Sum<
-                    Constant<1>,
-                    typename Power<typename X::canonical, Constant<2>>::canonical
-                >::canonical
-            >::canonical
-        >::canonical;
-    static inline double eval(double *x) { return asinh(X::canonical::eval(x)); }
+    using canonical = typename Canonical<ArSinh<X>, ArSinh<typename X::canonical>>::type;
+    template <class Z> using derivative = Ratio<Derivative<X,Z>, Sqrt<Sum<Square<X>,One>>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return asinh(X::canonical::eval(x)); }
 };
 template <class X> struct ArCosh {
-    using canonical = ArCosh<typename X::canonical>;
-    template <int i> using derivative =
-        typename Ratio<
-            Constant<1>,
-            typename Sqrt<
-                typename Sum<
-                    Constant<-1>,
-                    typename Power<typename X::canonical, Constant<2>>::canonical
-                >::canonical
-            >::canonical
-        >::canonical;
-    static inline double eval(double *x) { return acosh(X::canonical::eval(x)); }
+    using canonical = typename Canonical<ArCosh<X>, ArCosh<typename X::canonical>>::type;
+    template <class Z> using derivative = Ratio<Derivative<X,Z>, Sqrt<Difference<Square<X>,One>>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return acosh(X::canonical::eval(x)); }
 };
 template <class X> struct ArTanh {
-    using canonical = ArTanh<typename X::canonical>;
-    template <int i> using derivative =
-        typename Ratio<
-            Constant<1>,
-            typename Difference<
-                Constant<1>,
-                typename Power<typename X::canonical, Constant<2>>::canonical
-            >::canonical
-        >::canonical;
-    static inline double eval(double *x) { return atanh(X::canonical::eval(x)); }
+    using canonical = typename Canonical<ArTanh<X>, ArTanh<typename X::canonical>>::type;
+    template <class Z> using derivative = Ratio<One, Difference<One,Square<X>>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return atanh(X::canonical::eval(x)); }
 };
 
-template<> struct ArcSin<Constant<0>> { using canonical = Constant<0>; };
-template<> struct ArcCos<Constant<1>> { using canonical = Constant<0>; };
-template<> struct ArcTan<Constant<0>> { using canonical = Constant<0>; };
-template<> struct ArSinh<Constant<0>> { using canonical = Constant<0>; };
-template<> struct ArCosh<Constant<1>> { using canonical = Constant<0>; };
-template<> struct ArTanh<Constant<0>> { using canonical = Constant<0>; };
+template<> struct ArcSin<Zero> { using canonical = Zero; };
+template<> struct ArcCos<One>  { using canonical = Zero; };
+template<> struct ArcTan<Zero> { using canonical = Zero; };
+template<> struct ArSinh<Zero> { using canonical = Zero; };
+template<> struct ArCosh<One>  { using canonical = Zero; };
+template<> struct ArTanh<Zero> { using canonical = Zero; };
 
-template <class X> using ArcCsc = typename ArcSin<typename Ratio<Constant<1>, typename X::canonical>::canonical>::canonical;
-template <class X> using ArcSec = typename ArcCos<typename Ratio<Constant<1>, typename X::canonical>::canonical>::canonical;
-template <class X> using ArcCot = typename ArcTan<typename Ratio<Constant<1>, typename X::canonical>::canonical>::canonical;
-template <class X> using ArCsch = typename ArSinh<typename Ratio<Constant<1>, typename X::canonical>::canonical>::canonical;
-template <class X> using ArSech = typename ArCosh<typename Ratio<Constant<1>, typename X::canonical>::canonical>::canonical;
-template <class X> using ArCoth = typename ArTanh<typename Ratio<Constant<1>, typename X::canonical>::canonical>::canonical;
+template <class X> using ArcCsc = typename ArcSin<Ratio<One,X>>::canonical;
+template <class X> using ArcSec = typename ArcCos<Ratio<One,X>>::canonical;
+template <class X> using ArcCot = typename ArcTan<Ratio<One,X>>::canonical;
+template <class X> using ArCsch = typename ArSinh<Ratio<One,X>>::canonical;
+template <class X> using ArSech = typename ArCosh<Ratio<One,X>>::canonical;
+template <class X> using ArCoth = typename ArTanh<Ratio<One,X>>::canonical;
 
 
 
@@ -546,20 +470,17 @@ template <class X> using ArCoth = typename ArTanh<typename Ratio<Constant<1>, ty
 // The error function and its complement
 
 template <class X> struct Erf {
-    using canonical = Erf<typename X::canonical>;
-    template <int i> using derivative =
-        typename Product<
-            Ratio<Constant<2>,Sqrt<ConstantPI>>,
-            typename Exp<typename Power<typename X::canonical, Constant<-2>>::canonical>::canonical>::canonical;
-    static inline double eval(double *x) { return erf(X::canonical::eval(x)); }
+    using canonical = typename Canonical<Erf<X>, Erf<typename X::canonical>>::type;
+    template <class Z> using derivative =
+        Product<
+            Ratio<Two,Sqrt<Pi>>,
+            Ratio<Derivative<X,Z>, Exp<Square<X>>>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return erf(X::canonical::eval(x)); }
 };
 template <class X> struct Erfc {
-    using canonical = Erfc<typename X::canonical>;
-    template <int i> using derivative =
-        typename Product<
-            Ratio<Constant<-2>,Sqrt<ConstantPI>>,
-            typename Exp<typename Power<typename X::canonical, Constant<-2>>::canonical>::canonical>::canonical;
-    static inline double eval(double *x) { return erfc(X::canonical::eval(x)); }
+    using canonical = typename Canonical<Erfc<X>, Erfc<typename X::canonical>>::type;
+    template <class Z> using derivative = Negative<Derivative<Erf<X>,Z>>;
+    template <class scalar> static inline scalar eval(scalar *x) { return erfc(X::canonical::eval(x)); }
 };
 
 
